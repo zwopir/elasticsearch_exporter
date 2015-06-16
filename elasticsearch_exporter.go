@@ -118,9 +118,10 @@ type NodeStatsIndicesResponse struct {
 	Get         NodeStatsIndicesGetResponse
 	Search      NodeStatsIndicesSearchResponse
 	FieldData   NodeStatsIndicesFieldDataResponse
-	FilterCache NodeStatsIndicesFieldDataResponse
+	FilterCache NodeStatsIndicesFieldDataResponse `json:"filter_cache"`
 	Flush       NodeStatsIndicesFlushResponse
 	Segments    NodeStatsIndicesSegmentsResponse
+	Refresh     NodeStatsIndicesRefreshResponse
 }
 
 type NodeStatsIndicesDocsResponse struct {
@@ -131,6 +132,11 @@ type NodeStatsIndicesDocsResponse struct {
 type NodeStatsIndicesSegmentsResponse struct {
 	Count  int64 `json:"count"`
 	Memory int64 `json:"memory_in_bytes"`
+}
+
+type NodeStatsIndicesRefreshResponse struct {
+	Total     int64 `json:"total"`
+	TotalTime int64 `json:"total_time_in_millis"`
 }
 
 type NodeStatsIndicesStoreResponse struct {
@@ -275,6 +281,7 @@ var (
 		"indices_docs_deleted":                      "Count of deleted documents on this node",
 		"indices_store_size_in_bytes":               "Size of stored index data in bytes",
 		"indices_segments_memory_in_bytes":          "Memory size of segments in bytes",
+		"indices_segments_count":                    "Count of index segments on this node",
 		"jvm_mem_heap_committed_in_bytes":           "JVM heap memory committed",
 		"jvm_mem_heap_used_in_bytes":                "JVM heap memory used",
 		"jvm_mem_heap_max_in_bytes":                 "JVM heap memory max",
@@ -295,6 +302,8 @@ var (
 		"indices_merges_total_docs":             "Cumulative docs merged",
 		"indices_merges_total_size_in_bytes":    "Total merge size in bytes",
 		"indices_merges_total_time_in_millis":   "Total time spent merging",
+		"indices_refresh_total":                 "Total refreshes",
+		"indices_refresh_total_time_in_millis":  "Total time spent refreshing",
 	}
 	counterVecMetrics = map[string]*VecInfo{
 		"jvm_gc_collection_count": &VecInfo{
@@ -304,6 +313,10 @@ var (
 		"jvm_gc_collection_time_in_millis": &VecInfo{
 			help:   "GC run time",
 			labels: []string{"collector"},
+		},
+		"time": &VecInfo{
+			help:   "Rollup of various millisecond counters",
+			labels: []string{"component"},
 		},
 	}
 
@@ -315,6 +328,10 @@ var (
 		"breakers_limit_size_in_bytes": &VecInfo{
 			help:   "Limit size in bytes for breaker",
 			labels: []string{"breaker"},
+		},
+		"memory": &VecInfo{
+			help:   "Rollup of various memory gauges",
+			labels: []string{"component"},
 		},
 	}
 )
@@ -466,6 +483,8 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		for collector, gcstats := range stats.JVM.GC.Collectors {
 			e.counters["jvm_gc_collection_count"].WithLabelValues(all_stats.ClusterName, stats.Name, collector).Set(float64(gcstats.CollectionCount))
 			e.counters["jvm_gc_collection_time_in_millis"].WithLabelValues(all_stats.ClusterName, stats.Name, collector).Set(float64(gcstats.CollectionTime))
+
+			e.counters["time"].WithLabelValues(all_stats.ClusterName, stats.Name, "gc_collection_"+collector).Set(float64(gcstats.CollectionTime))
 		}
 
 		// Breaker stats
@@ -484,26 +503,39 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		// Indices Stats
 		e.gauges["indices_fielddata_evictions"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Indices.FieldData.Evictions))
 		e.gauges["indices_fielddata_memory_size_in_bytes"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Indices.FieldData.MemorySize))
+		e.gauges["memory"].WithLabelValues(all_stats.ClusterName, stats.Name, "fielddata").Set(float64(stats.Indices.FieldData.MemorySize))
 		e.gauges["indices_filter_cache_evictions"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Indices.FilterCache.Evictions))
 		e.gauges["indices_filter_cache_memory_size_in_bytes"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Indices.FilterCache.MemorySize))
+		e.gauges["memory"].WithLabelValues(all_stats.ClusterName, stats.Name, "filter_cache").Set(float64(stats.Indices.FilterCache.MemorySize))
 
 		e.gauges["indices_docs_count"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Indices.Docs.Count))
 		e.gauges["indices_docs_deleted"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Indices.Docs.Deleted))
 
 		e.gauges["indices_segments_memory_in_bytes"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Indices.Segments.Memory))
+		e.gauges["memory"].WithLabelValues(all_stats.ClusterName, stats.Name, "segments").Set(float64(stats.Indices.Segments.Memory))
+
+		e.gauges["indices_segments_count"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Indices.Segments.Count))
 
 		e.gauges["indices_store_size_in_bytes"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Indices.Store.Size))
 		e.counters["indices_store_throttle_time_in_millis"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Indices.Store.ThrottleTime))
+		e.counters["time"].WithLabelValues(all_stats.ClusterName, stats.Name, "indices_store_throttle").Set(float64(stats.Indices.Store.ThrottleTime))
 
 		e.counters["indices_flush_total"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Indices.Flush.Total))
 		e.counters["indices_flush_time_in_millis"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Indices.Flush.Time))
+		e.counters["time"].WithLabelValues(all_stats.ClusterName, stats.Name, "indices_flush").Set(float64(stats.Indices.Flush.Time))
 
 		e.counters["indices_indexing_index_time_in_millis"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Indices.Indexing.IndexTime))
+		e.counters["time"].WithLabelValues(all_stats.ClusterName, stats.Name, "indices_indexing_index").Set(float64(stats.Indices.Indexing.IndexTime))
 		e.counters["indices_indexing_index_total"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Indices.Indexing.IndexTotal))
 
 		e.counters["indices_merges_total_time_in_millis"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Indices.Merges.TotalTime))
+		e.counters["time"].WithLabelValues(all_stats.ClusterName, stats.Name, "indices_merges").Set(float64(stats.Indices.Merges.TotalTime))
 		e.counters["indices_merges_total_size_in_bytes"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Indices.Merges.TotalSize))
 		e.counters["indices_merges_total"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Indices.Merges.Total))
+
+		e.counters["indices_refresh_total_time_in_millis"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Indices.Refresh.TotalTime))
+		e.counters["time"].WithLabelValues(all_stats.ClusterName, stats.Name, "indices_refresh").Set(float64(stats.Indices.Refresh.TotalTime))
+		e.counters["indices_refresh_total"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Indices.Refresh.Total))
 
 		// Transport Stats
 		e.counters["transport_rx_count"].WithLabelValues(all_stats.ClusterName, stats.Name).Set(float64(stats.Transport.RxCount))
