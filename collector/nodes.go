@@ -34,7 +34,9 @@ var (
 		} else {
 			for role, setting := range node.Attributes {
 				if _, ok := roles[role]; ok {
-					roles[role] = setting == "false"
+					if setting == "false" {
+						roles[role] = false
+					}
 				}
 			}
 		}
